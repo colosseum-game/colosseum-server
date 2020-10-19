@@ -1,9 +1,15 @@
 [package]
-name = "coliseum-server"
+name = "colosseum-server"
 version = "0.1.0"
 authors = ["Chay Nabors <chaynabors@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+anyhow = "1.0.32"
+colosseum = { path = "../colosseum" }
+
+[dependencies.tokio]
+git = "https://github.com/tokio-rs/tokio"
+branch = "master"
+default-features = false
+features = ["dns", "macros", "sync", "tcp"]
