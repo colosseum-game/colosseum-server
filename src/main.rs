@@ -1,79 +1,57 @@
-use anyhow::{
-    anyhow,
-    Result,
-};
-
 use colosseum::{
-    actions::Action,
     combatant::Combatant,
+    message::{
+        MessageToClient,
+        MessageToServer,
+    },
+    party::{
+        CONSUMABLES_INVENTORY_SIZE,
+        Party
+    },
 };
 
 use std::{
-    sync::Arc,
-    env,
-    net::SocketAddr,
+    io::{
+        Read,
+        Write,
+    },
+    net::{
+        Ipv4Addr,
+        SocketAddrV4,
+        TcpListener,
+        TcpStream
+    },
 };
 
-use tokio::{
-    net::TcpListener,
-    prelude::*,
-    sync::Mutex,
-};
+fn main() -> std::io::Result<()> {
+    // bind to address and port
+    let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 40004);
+    let listener = TcpListener::bind(&addr)?;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Set up initial game state
-    let state = Arc::new(Mutex::new(vec![
-        Combatant {
-            name: "Brayden".to_string(),
-            hp: 45,
-            hp_max: 45,
-            physical_attack: 12,
-            physical_resistance: 6,
-            intelligence: 69,
-            speed: 8,
-            actions: vec![
-                Action::Attack,
-                Action::Cry,
-                Action::Skip,
-                Action::UseItem,
-            ],
-        },
-        Combatant {
-            name: "Chay".to_string(),
-            hp: 30,
-            hp_max: 30,
-            physical_attack: 7,
-            physical_resistance: 8,
-            intelligence: 420,
-            speed: 12,
-            actions: vec![
-                Action::Attack,
-                Action::Cry,
-                Action::Skip,
-                Action::UseItem,
-            ],
-        },
-        Combatant {
-            name: "Tree".to_string(),
-            hp: 700,
-            hp_max: 700,
-            physical_attack: 0,
-            physical_resistance: 8,
-            intelligence: 0,
-            speed: 1,
-            actions: vec![
-                Action::Skip,
-                Action::Cry,
-            ],
-        },
-    ]));
+    // imitate database retrieval
+    let brayden: Combatant = serde_json::from_slice(include_bytes!("../combatants/brayden.json"))?;
+    let chay: Combatant = serde_json::from_slice(include_bytes!("../combatants/chay.json"))?;
 
-    let addr = env::args().nth(1).unwrap_or_else(|| "127.0.0.1:40004".to_string());
-    let mut listener = TcpListener::bind(&addr).await?;
+    // the initial gamestate
+    let gamestate = MessageToClient::GameState([
+        Party {
+            members: [Some(brayden), None, None, None],
+            consumables_inventory: [None; CONSUMABLES_INVENTORY_SIZE],
+        },
+        Party {
+            members: [Some(chay), None, None, None],
+            consumables_inventory: [None; CONSUMABLES_INVENTORY_SIZE],
+        },
+    ]);
 
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        let state = Arc::clone(&state);
+    let mut players: Vec<TcpStream> = vec![];
+    while players.len() < 2 {
+        if let Ok((mut stream, addr)) = listener.accept() {
+            println!("connection from {}", addr);
+            stream.write(&serde_mp::to_vec(&gamestate).unwrap())?;
+            players.push(stream);
+        }
     }
+
+    Ok(())
 }

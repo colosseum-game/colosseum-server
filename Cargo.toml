@@ -7,9 +7,5 @@ edition = "2018"
 [dependencies]
 anyhow = "1.0.32"
 colosseum = { path = "../colosseum" }
-
-[dependencies.tokio]
-git = "https://github.com/tokio-rs/tokio"
-branch = "master"
-default-features = false
-features = ["dns", "macros", "sync", "tcp"]
+serde_json = "1.0.59"
+serde_mp = { package = "rmp-serde", version = "0.14.4" }
