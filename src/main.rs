@@ -1,70 +1,190 @@
-use colosseum::{
-    combat_state::CombatState,
-    connection::Connection,
-    message::Message,
-};
+use std::{cell::RefCell, collections::HashMap, convert::{TryFrom, TryInto}, env, io::Write, net::{SocketAddr, ToSocketAddrs}, rc::Rc, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread::{self, sleep}, time::{Duration, Instant}};
 
-use tokio::{
-    net::TcpListener,
-    runtime,
-    sync::{
-        mpsc,
-    },
-};
+use colosseum::{bodywear::BodywearIdentifier, combat_event::CombatEvent, combat_state::CombatState, combatant::Combatant, footwear::FootwearIdentifier, gender::Gender, handwear::HandwearIdentifier, legwear::LegwearIdentifier, message::{Message, ProtocolVersion, TakeTurn}, party::Party, skill::SkillIdentifier, target::Target, weapon::WeaponIdentifier};
+use crossbeam::channel::{Sender, TryRecvError};
+use laminar::{Packet, SocketEvent};
+use log::info;
 
-struct Match {
-    clients: Vec<Connection>,
-    combat_state: CombatState,
+pub trait Client {
+    fn send_message<T: TryInto<Message, Error = bincode::Error>>(&self, sender: &Sender<Packet>, payload: T) -> anyhow::Result<()>;
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = runtime::Builder::new_multi_thread()
-        .enable_io()
-        .build()
-        .unwrap();
+impl Client for SocketAddr {
+    fn send_message<T: TryInto<Message, Error = bincode::Error>>(&self, sender: &Sender<Packet>, payload: T) -> anyhow::Result<()> {
+        let message: Message = payload.try_into()?;
+        let payload = bincode::serialize(&message)?;
+        sender.send(Packet::reliable_ordered(*self, payload, None))?;
+        Ok(())
+    }
+}
 
-    let listener = runtime.block_on(TcpListener::bind("127.0.0.1:40004"))?;
-    let (tx, mut rx) = mpsc::channel(16);
+struct Participant {
+    pub address: SocketAddr,
+    pub ownership: Vec<Target>,
+}
 
-    runtime.spawn(async move {
-        loop {
-            let client = listener.accept().await.expect("failed to accept client");
-            tx.send(client).await.expect("failed to return an incoming client");
+struct Match {
+    pub participants: Vec<Participant>,
+    pub spectators: Vec<SocketAddr>,
+    pub combat_state: CombatState,
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::new()
+        .format(|buf, record| {
+            writeln!(buf, "[{}] {}", record.level(), record.args())
+        })
+        .filter(None, log::LevelFilter::Info)
+        .init();
+
+    let mut args = env::args();
+    let _app = args.next();
+    let addresses = args.next().unwrap();
+    let mut addresses = addresses.to_socket_addrs().unwrap();
+    let address = addresses.next().unwrap();
+
+    let mut socket = laminar::Socket::bind(address)?;
+    let sender = socket.get_packet_sender();
+    let mut receiver = Some(socket.get_event_receiver());
+
+    let stop_signal = Arc::new(AtomicBool::new(false));
+    let stop = stop_signal.clone();
+
+    let mut socket_thread = Some(thread::spawn(move ||
+        while !stop.load(Ordering::Relaxed) {
+            socket.manual_poll(Instant::now());
+            sleep(Duration::from_millis(1));
         }
-    });
+    ));
 
-    let mut clients = vec![];
-    let mut matches = vec![];
+    let mut clients: Vec<SocketAddr> = vec![];
+    let mut matches_by_client: HashMap<SocketAddr, Rc<RefCell<Match>>> = HashMap::default();
+
     loop {
-        while let Ok((stream, addr)) = rx.try_recv() {
-            println!("client connected from: {}", addr);
-            clients.push(Connection::new(addr, stream));
+        match &receiver {
+            Some(recv) => match recv.try_recv() {
+                Ok(message) => match message {
+                    SocketEvent::Packet(packet) => {
+                        let message = bincode::deserialize::<Message>(packet.payload()).unwrap();
+                        info!("received message from {}: {:?}", packet.addr(), message.type_);
+                        match matches_by_client.get(&packet.addr()) {
+                            Some(match_) => {
+                                let match_ = match_.borrow_mut();
+                                match message.type_ {
+                                    colosseum::message::MessageType::CombatEvent => {
+                                        let event = CombatEvent::try_from(&message).unwrap();
 
-            let combat_state = CombatState::new();
-            let message = Message::CombatState(combat_state);
-            runtime.block_on(async { clients[0].write_message(&message).await })?;
-        }
+                                        // propogate message
+                                        for participant in &match_.participants {
+                                            participant.address.send_message(&sender, &event).unwrap()
+                                        }
 
-        while clients.len() >= 2 {
-            let mut p1 = clients.pop().unwrap();
-            let mut p2 = clients.pop().unwrap();
+                                        // tell next client to take a turn
+                                        match_.participants[0].address.send_message(&sender, &TakeTurn { target: Target { party_index: 0, member_index: 0 } }).unwrap();
+                                    },
+                                    _ => (),
+                                }
+                            },
+                            None => {
+                                let protover = Message::try_from(&ProtocolVersion(0)).unwrap();
+                                sender.send(Packet::reliable_ordered(packet.addr(), bincode::serialize(&protover).unwrap(), None)).unwrap()
+                            },
+                        }
+                        
+                    },
+                    SocketEvent::Connect(address) => {
+                        clients.push(address);
+                        if clients.len() > 1 {
+                            let combat_state = CombatState {
+                                parties: vec![
+                                    Party {
+                                        members: vec![
+                                            Combatant {
+                                                name: "Angelo".into(),
+                                                gender: Gender::Male,
+                                                skills: vec![SkillIdentifier::Sweep],
+                        
+                                                agility: 9,
+                                                dexterity: 13,
+                                                intelligence: 6,
+                                                mind: 8,
+                                                strength: 5,
+                                                vigor: 20,
+                                                vitality: 12,
+                        
+                                                bodywear: Some(BodywearIdentifier::BreakersLongsleeve),
+                                                footwear: Some(FootwearIdentifier::BreakersSneakers),
+                                                handwear: Some(HandwearIdentifier::BreakersWraps),
+                                                headwear: None,
+                                                legwear: Some(LegwearIdentifier::BreakersHaremPants),
+                                                weapon: Some(WeaponIdentifier::PipeIron),
+                        
+                                                hp: 20,
+                                                fatigue: 0,
+                                                dots: vec![],
+                        
+                                                agility_modifiers: vec![],
+                                                dexterity_modifiers: vec![],
+                                                intelligence_modifiers: vec![],
+                                                mind_modifiers: vec![],
+                                                strength_modifiers: vec![],
+                                                vigor_modifiers: vec![],
+                                                vitality_modifiers: vec![],
+                                            }
+                                        ],
+                                        inventory: vec![],
+                                    },
+                                    Party {
+                                        members: vec![],
+                                        inventory: vec![],
+                                    },
+                                ],
+                            };
 
-            let mut combat_state = CombatState::new();
+                            let addr1 = clients.pop().unwrap();
+                            let addr2 = clients.pop().unwrap();
 
-            let message = Message::CombatState(combat_state);
-            runtime.block_on(async { p1.write_message(&message).await })?;
-            runtime.block_on(async { p2.write_message(&message).await })?;
-            combat_state = if let Message::CombatState(combat_state) = message { combat_state } else { unreachable!() };
+                            addr1.send_message(&sender, &combat_state).unwrap();
+                            addr1.send_message(&sender, &TakeTurn { target: Target { party_index: 0, member_index: 0 } }).unwrap();
+                            addr2.send_message(&sender, &combat_state).unwrap();
 
-            println!("started a match: {}, {}", p1.addr, p2.addr);
-            matches.push(Match {
-                clients: vec![p1, p2],
-                combat_state: combat_state,
-            });
-        }
+                            let match_ = Rc::new(RefCell::new(Match {
+                                participants: vec![
+                                    Participant {
+                                        address: addr1,
+                                        ownership: vec![Target { party_index: 0, member_index: 0 }],
+                                    },
+                                    Participant {
+                                        address: addr2,
+                                        ownership: vec![],
+                                    }
+                                ],
+                                spectators: vec![],
+                                combat_state,
+                            }));
 
-        for i in 0..matches.len() {
-            runtime.block_on(async { matches[i].clients[0].read_message().await })?;
+                            matches_by_client.insert(addr1, match_.clone());
+                            matches_by_client.insert(addr2, match_);
+                        }
+                    },
+                    SocketEvent::Timeout(address) => info!("{} timed out", address),
+                    SocketEvent::Disconnect(address) => info!("{} disconnected", address),
+                },
+                Err(e) => match e {
+                    TryRecvError::Empty => (),
+                    TryRecvError::Disconnected => {
+                        socket_thread.take().unwrap().join().unwrap();
+                        receiver.take();
+                        break;
+                    },
+                },
+            },
+            None => break,
         }
     }
+
+    stop_signal.swap(true, Ordering::Relaxed);
+
+    Ok(())
 }
