@@ -78,6 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 match message.type_ {
                                     colosseum::message::MessageType::CombatEvent => {
                                         let event = CombatEvent::try_from(&message).unwrap();
+                                        info!("{:?}", event);
 
                                         // propogate message to participants
                                         for participant in &match_.participants {
@@ -233,7 +234,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 match owner {
-                                    Some(owner) => match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap(),
+                                    Some(owner) => {
+                                        info!("Requested that {} takes a turn for {}", match_.participants[owner].address, match_.combat_state.parties[ready.party_index].members[ready.member_index].name);
+                                        match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap();
+                                    },
                                     None => error!("Match participant has no owner but needs to take a turn"),
                                 }
                             }
