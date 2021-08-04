@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(message) => match message {
                     SocketEvent::Packet(packet) => {
                         let message = bincode::deserialize::<Message>(packet.payload()).unwrap();
-                        info!("received message from {}: {:?}", packet.addr(), message.type_);
+                        info!("Received message from {}: {:?}", packet.addr(), message.type_);
                         match matches_by_client.get(&packet.addr()) {
                             Some(match_) => {
                                 let mut match_ = match_.borrow_mut();
@@ -100,8 +100,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
 
                                         match owner {
-                                            Some(owner) => match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap(),
-                                            None => error!("match participant has no owner but needs to take a turn"),
+                                            Some(owner) => {
+                                                info!("Requested that {} takes a turn for {}", match_.participants[owner].address, match_.combat_state.parties[ready.party_index].members[ready.member_index].name);
+                                                match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap();
+                                            },
+                                            None => error!("Match participant has no owner but needs to take a turn"),
                                         }
                                     },
                                     _ => (),
@@ -231,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 match owner {
                                     Some(owner) => match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap(),
-                                    None => error!("match participant has no owner but needs to take a turn"),
+                                    None => error!("Match participant has no owner but needs to take a turn"),
                                 }
                             }
 
