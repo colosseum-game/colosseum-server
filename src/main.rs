@@ -2,8 +2,8 @@ use std::{cell::RefCell, collections::HashMap, convert::{TryFrom, TryInto}, env,
 
 use colosseum::{bodywear::BodywearIdentifier, combat_event::CombatEvent, combat_state::CombatState, combatant::Combatant, footwear::FootwearIdentifier, gender::Gender, handwear::HandwearIdentifier, legwear::LegwearIdentifier, message::{Message, ProtocolVersion, TakeTurn}, party::Party, skill::SkillIdentifier, target::Target, weapon::WeaponIdentifier};
 use crossbeam::channel::{Sender, TryRecvError};
-use laminar::{Packet, SocketEvent};
-use log::info;
+use laminar::{Config, Packet, SocketEvent};
+use log::{error, info};
 
 pub trait Client {
     fn send_message<T: TryInto<Message, Error = bincode::Error>>(&self, sender: &Sender<Packet>, payload: T) -> anyhow::Result<()>;
@@ -44,7 +44,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut addresses = addresses.to_socket_addrs().unwrap();
     let address = addresses.next().unwrap();
 
-    let mut socket = laminar::Socket::bind(address)?;
+    let mut socket = laminar::Socket::bind_with_config(address, Config {
+        idle_connection_timeout: Duration::from_secs(120),
+        heartbeat_interval: Some(Duration::from_secs(50)),
+        ..Default::default()
+    })?;
     let sender = socket.get_packet_sender();
     let mut receiver = Some(socket.get_event_receiver());
 
@@ -70,18 +74,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         info!("received message from {}: {:?}", packet.addr(), message.type_);
                         match matches_by_client.get(&packet.addr()) {
                             Some(match_) => {
-                                let match_ = match_.borrow_mut();
+                                let mut match_ = match_.borrow_mut();
                                 match message.type_ {
                                     colosseum::message::MessageType::CombatEvent => {
                                         let event = CombatEvent::try_from(&message).unwrap();
 
-                                        // propogate message
+                                        // propogate message to participants
                                         for participant in &match_.participants {
-                                            participant.address.send_message(&sender, &event).unwrap()
+                                            participant.address.send_message(&sender, &event).unwrap();
+                                        }
+
+                                        // propogate message to spectators
+                                        for spectator in &match_.spectators {
+                                            spectator.send_message(&sender, &event).unwrap();
                                         }
 
                                         // tell next client to take a turn
-                                        match_.participants[0].address.send_message(&sender, &TakeTurn { target: Target { party_index: 0, member_index: 0 } }).unwrap();
+                                        let ready = match_.combat_state.next_combatant();
+                                        let mut owner = None;
+                                        for i in 0..match_.participants.len() {
+                                            if match_.participants[i].ownership.contains(&ready) {
+                                                owner = Some(i);
+                                                break;
+                                            }
+                                        }
+
+                                        match owner {
+                                            Some(owner) => match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap(),
+                                            None => error!("match participant has no owner but needs to take a turn"),
+                                        }
                                     },
                                     _ => (),
                                 }
@@ -136,17 +157,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         inventory: vec![],
                                     },
                                     Party {
-                                        members: vec![],
+                                        members: vec![
+                                            Combatant {
+                                                name: "Fat arms".into(),
+                                                gender: Gender::Other,
+                                                skills: vec![SkillIdentifier::Sweep],
+                        
+                                                agility: 7,
+                                                dexterity: 13,
+                                                intelligence: 2,
+                                                mind: 1,
+                                                strength: 36,
+                                                vigor: 20,
+                                                vitality: 12,
+                        
+                                                bodywear: None,
+                                                footwear: None,
+                                                handwear: None,
+                                                headwear: None,
+                                                legwear: None,
+                                                weapon: Some(WeaponIdentifier::PipeIron),
+
+                                                hp: 20,
+                                                fatigue: 0,
+                                                dots: vec![],
+
+                                                agility_modifiers: vec![],
+                                                dexterity_modifiers: vec![],
+                                                intelligence_modifiers: vec![],
+                                                mind_modifiers: vec![],
+                                                strength_modifiers: vec![],
+                                                vigor_modifiers: vec![],
+                                                vitality_modifiers: vec![],
+                                            },
+                                        ],
                                         inventory: vec![],
                                     },
                                 ],
                             };
 
-                            let addr1 = clients.pop().unwrap();
                             let addr2 = clients.pop().unwrap();
+                            let addr1 = clients.pop().unwrap();
 
                             addr1.send_message(&sender, &combat_state).unwrap();
-                            addr1.send_message(&sender, &TakeTurn { target: Target { party_index: 0, member_index: 0 } }).unwrap();
                             addr2.send_message(&sender, &combat_state).unwrap();
 
                             let match_ = Rc::new(RefCell::new(Match {
@@ -157,12 +210,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     },
                                     Participant {
                                         address: addr2,
-                                        ownership: vec![],
+                                        ownership: vec![Target { party_index: 1, member_index: 0 }],
                                     }
                                 ],
                                 spectators: vec![],
                                 combat_state,
                             }));
+
+                            {
+                                let mut match_ = match_.borrow_mut();
+
+                                let ready = match_.combat_state.next_combatant();
+                                let mut owner = None;
+                                for i in 0..match_.participants.len() {
+                                    if match_.participants[i].ownership.contains(&ready) {
+                                        owner = Some(i);
+                                        break;
+                                    }
+                                }
+
+                                match owner {
+                                    Some(owner) => match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap(),
+                                    None => error!("match participant has no owner but needs to take a turn"),
+                                }
+                            }
 
                             matches_by_client.insert(addr1, match_.clone());
                             matches_by_client.insert(addr2, match_);
