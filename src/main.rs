@@ -1,6 +1,31 @@
-use std::{cell::RefCell, collections::HashMap, convert::{TryFrom, TryInto}, env, io::Write, net::{SocketAddr, ToSocketAddrs}, rc::Rc, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread::{self, sleep}, time::{Duration, Instant}};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    convert::{TryFrom, TryInto},
+    env,
+    io::Write,
+    net::{SocketAddr, ToSocketAddrs},
+    rc::Rc,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
+    thread::{self, sleep},
+    time::{Duration, Instant}
+};
 
-use colosseum::{bodywear::BodywearIdentifier, combat_event::CombatEvent, combat_state::CombatState, combatant::Combatant, footwear::FootwearIdentifier, gender::Gender, handwear::HandwearIdentifier, legwear::LegwearIdentifier, message::{Message, ProtocolVersion, TakeTurn}, party::Party, skill::SkillIdentifier, target::Target, weapon::WeaponIdentifier};
+use colosseum::{
+    bodywear::BodywearIdentifier,
+    combat_event::CombatEvent,
+    combat_state::CombatState,
+    combatant::Combatant,
+    footwear::FootwearIdentifier,
+    gender::Gender,
+    handwear::HandwearIdentifier,
+    legwear::LegwearIdentifier,
+    message::{Message, ProtocolVersion, TakeTurn},
+    party::Party,
+    skill::SkillIdentifier,
+    target::Target,
+    weapon::WeaponIdentifier
+};
 use crossbeam::channel::{Sender, TryRecvError};
 use laminar::{Config, Packet, SocketEvent};
 use log::{error, info};
@@ -78,7 +103,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 match message.type_ {
                                     colosseum::message::MessageType::CombatEvent => {
                                         let event = CombatEvent::try_from(&message).unwrap();
-                                        info!("{:?}", event);
 
                                         // propogate message to participants
                                         for participant in &match_.participants {
@@ -129,26 +153,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 name: "Angelo".into(),
                                                 gender: Gender::Male,
                                                 skills: vec![SkillIdentifier::Sweep],
-                        
-                                                agility: 9,
-                                                dexterity: 13,
-                                                intelligence: 6,
-                                                mind: 8,
-                                                strength: 5,
-                                                vigor: 20,
-                                                vitality: 12,
-                        
+
+                                                agility: 10.,
+                                                dexterity: 13.,
+                                                intelligence: 6.,
+                                                mind: 8.,
+                                                strength: 5.,
+                                                vigor: 20.,
+                                                vitality: 12.,
+
                                                 bodywear: Some(BodywearIdentifier::BreakersLongsleeve),
                                                 footwear: Some(FootwearIdentifier::BreakersSneakers),
                                                 handwear: Some(HandwearIdentifier::BreakersWraps),
                                                 headwear: None,
                                                 legwear: Some(LegwearIdentifier::BreakersHaremPants),
                                                 weapon: Some(WeaponIdentifier::PipeIron),
-                        
-                                                hp: 20,
-                                                fatigue: 0,
+
+                                                hp: 20.,
+                                                fatigue: f64::MAX,
                                                 dots: vec![],
-                        
+
                                                 agility_modifiers: vec![],
                                                 dexterity_modifiers: vec![],
                                                 intelligence_modifiers: vec![],
@@ -166,15 +190,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 name: "Fat arms".into(),
                                                 gender: Gender::Other,
                                                 skills: vec![SkillIdentifier::Sweep],
-                        
-                                                agility: 7,
-                                                dexterity: 13,
-                                                intelligence: 2,
-                                                mind: 1,
-                                                strength: 36,
-                                                vigor: 20,
-                                                vitality: 12,
-                        
+
+                                                agility: 5.,
+                                                dexterity: 13.,
+                                                intelligence: 2.,
+                                                mind: 1.,
+                                                strength: 36.,
+                                                vigor: 20.,
+                                                vitality: 12.,
+
                                                 bodywear: None,
                                                 footwear: None,
                                                 handwear: None,
@@ -182,8 +206,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 legwear: None,
                                                 weapon: Some(WeaponIdentifier::PipeIron),
 
-                                                hp: 20,
-                                                fatigue: 0,
+                                                hp: 20.,
+                                                fatigue: f64::MAX,
                                                 dots: vec![],
 
                                                 agility_modifiers: vec![],
