@@ -11,21 +11,7 @@ use std::{
     time::{Duration, Instant}
 };
 
-use colosseum::{
-    bodywear::BodywearIdentifier,
-    combat_event::CombatEvent,
-    combat_state::CombatState,
-    combatant::Combatant,
-    footwear::FootwearIdentifier,
-    gender::Gender,
-    handwear::HandwearIdentifier,
-    legwear::LegwearIdentifier,
-    message::{Message, ProtocolVersion, TakeTurn},
-    party::Party,
-    skill::SkillIdentifier,
-    target::Target,
-    weapon::WeaponIdentifier
-};
+use colosseum::{bodywear::BodywearIdentifier, combat_event::CombatEvent, combat_state::CombatState, combatant::Combatant, footwear::FootwearIdentifier, gender::Gender, handwear::HandwearIdentifier, legwear::LegwearIdentifier, message::{Message, MessageType, ProtocolVersion, TakeTurn}, party::Party, skill::SkillIdentifier, target::Target, weapon::WeaponIdentifier};
 use crossbeam::channel::{Sender, TryRecvError};
 use laminar::{Config, Packet, SocketEvent};
 use log::{error, info};
@@ -88,6 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let mut clients: Vec<SocketAddr> = vec![];
+    let mut ready_clients: Vec<(SocketAddr, Party)> = vec![];
     let mut matches_by_client: HashMap<SocketAddr, Rc<RefCell<Match>>> = HashMap::default();
 
     loop {
@@ -101,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Some(match_) => {
                                 let mut match_ = match_.borrow_mut();
                                 match message.type_ {
-                                    colosseum::message::MessageType::CombatEvent => {
+                                    MessageType::CombatEvent => {
                                         let event = CombatEvent::try_from(&message).unwrap();
 
                                         // propogate message to participants
@@ -113,6 +100,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         for spectator in &match_.spectators {
                                             spectator.send_message(&sender, &event).unwrap();
                                         }
+
+                                        match_.combat_state.process_event(&event);
 
                                         // tell next client to take a turn
                                         let ready = match_.combat_state.next_combatant();
@@ -136,140 +125,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             },
                             None => {
-                                let protover = Message::try_from(&ProtocolVersion(0)).unwrap();
-                                sender.send(Packet::reliable_ordered(packet.addr(), bincode::serialize(&protover).unwrap(), None)).unwrap()
+                                if clients.contains(&packet.addr()) {
+                                    if message.type_ == MessageType::Party {
+                                        let party = Party::try_from(&message).unwrap();
+                                        ready_clients.push((packet.addr().clone(), party));
+
+                                        if ready_clients.len() > 1 {
+                                            let (addr2, party2) = ready_clients.pop().unwrap();
+                                            let (addr1, party1) = ready_clients.pop().unwrap();
+
+                                            let combat_state = CombatState {
+                                                parties: vec![
+                                                    party1,
+                                                    party2,
+                                                ],
+                                            };
+
+                                            addr1.send_message(&sender, &combat_state).unwrap();
+                                            addr2.send_message(&sender, &combat_state).unwrap();
+
+                                            let target_list = combat_state.get_target_list();
+                                            let ownership1 = target_list.iter().filter(|target| target.party_index == 0).copied().collect();
+                                            let ownership2 = target_list.iter().filter(|target| target.party_index == 1).copied().collect();
+
+                                            let match_ = Rc::new(RefCell::new(Match {
+                                                participants: vec![
+                                                    Participant {
+                                                        address: addr1,
+                                                        ownership: ownership1,
+                                                    },
+                                                    Participant {
+                                                        address: addr2,
+                                                        ownership: ownership2,
+                                                    }
+                                                ],
+                                                spectators: vec![],
+                                                combat_state,
+                                            }));
+
+                                            {
+                                                let mut match_ = match_.borrow_mut();
+
+                                                let ready = match_.combat_state.next_combatant();
+                                                let mut owner = None;
+                                                for i in 0..match_.participants.len() {
+                                                    if match_.participants[i].ownership.contains(&ready) {
+                                                        owner = Some(i);
+                                                        break;
+                                                    }
+                                                }
+                
+                                                match owner {
+                                                    Some(owner) => {
+                                                        info!("Requested that {} takes a turn for {}", match_.participants[owner].address, match_.combat_state.parties[ready.party_index].members[ready.member_index].name);
+                                                        match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap();
+                                                    },
+                                                    None => error!("Match participant has no owner but needs to take a turn"),
+                                                }
+                                            }
+                
+                                            matches_by_client.insert(addr1, match_.clone());
+                                            matches_by_client.insert(addr2, match_);
+                                        }
+                                    }
+                                } else if message.type_ == MessageType::ProtocolVersion {
+                                    let protover = Message::try_from(&ProtocolVersion(0)).unwrap();
+                                    sender.send(Packet::reliable_ordered(packet.addr(), bincode::serialize(&protover).unwrap(), None)).unwrap();
+                                }
                             },
                         }
-                        
                     },
-                    SocketEvent::Connect(address) => {
-                        clients.push(address);
-                        if clients.len() > 1 {
-                            let combat_state = CombatState {
-                                parties: vec![
-                                    Party {
-                                        members: vec![
-                                            Combatant {
-                                                name: "Angelo".into(),
-                                                gender: Gender::Male,
-                                                skills: vec![SkillIdentifier::Sweep],
-
-                                                agility: 10.,
-                                                dexterity: 13.,
-                                                intelligence: 6.,
-                                                mind: 8.,
-                                                strength: 5.,
-                                                vigor: 20.,
-                                                vitality: 12.,
-
-                                                bodywear: Some(BodywearIdentifier::BreakersLongsleeve),
-                                                footwear: Some(FootwearIdentifier::BreakersSneakers),
-                                                handwear: Some(HandwearIdentifier::BreakersWraps),
-                                                headwear: None,
-                                                legwear: Some(LegwearIdentifier::BreakersHaremPants),
-                                                weapon: Some(WeaponIdentifier::PipeIron),
-
-                                                hp: 20.,
-                                                fatigue: f64::MAX,
-                                                dots: vec![],
-
-                                                agility_modifiers: vec![],
-                                                dexterity_modifiers: vec![],
-                                                intelligence_modifiers: vec![],
-                                                mind_modifiers: vec![],
-                                                strength_modifiers: vec![],
-                                                vigor_modifiers: vec![],
-                                                vitality_modifiers: vec![],
-                                            }
-                                        ],
-                                        inventory: vec![],
-                                    },
-                                    Party {
-                                        members: vec![
-                                            Combatant {
-                                                name: "Fat arms".into(),
-                                                gender: Gender::Other,
-                                                skills: vec![SkillIdentifier::Sweep],
-
-                                                agility: 5.,
-                                                dexterity: 13.,
-                                                intelligence: 2.,
-                                                mind: 1.,
-                                                strength: 36.,
-                                                vigor: 20.,
-                                                vitality: 12.,
-
-                                                bodywear: None,
-                                                footwear: None,
-                                                handwear: None,
-                                                headwear: None,
-                                                legwear: None,
-                                                weapon: Some(WeaponIdentifier::PipeIron),
-
-                                                hp: 20.,
-                                                fatigue: f64::MAX,
-                                                dots: vec![],
-
-                                                agility_modifiers: vec![],
-                                                dexterity_modifiers: vec![],
-                                                intelligence_modifiers: vec![],
-                                                mind_modifiers: vec![],
-                                                strength_modifiers: vec![],
-                                                vigor_modifiers: vec![],
-                                                vitality_modifiers: vec![],
-                                            },
-                                        ],
-                                        inventory: vec![],
-                                    },
-                                ],
-                            };
-
-                            let addr2 = clients.pop().unwrap();
-                            let addr1 = clients.pop().unwrap();
-
-                            addr1.send_message(&sender, &combat_state).unwrap();
-                            addr2.send_message(&sender, &combat_state).unwrap();
-
-                            let match_ = Rc::new(RefCell::new(Match {
-                                participants: vec![
-                                    Participant {
-                                        address: addr1,
-                                        ownership: vec![Target { party_index: 0, member_index: 0 }],
-                                    },
-                                    Participant {
-                                        address: addr2,
-                                        ownership: vec![Target { party_index: 1, member_index: 0 }],
-                                    }
-                                ],
-                                spectators: vec![],
-                                combat_state,
-                            }));
-
-                            {
-                                let mut match_ = match_.borrow_mut();
-
-                                let ready = match_.combat_state.next_combatant();
-                                let mut owner = None;
-                                for i in 0..match_.participants.len() {
-                                    if match_.participants[i].ownership.contains(&ready) {
-                                        owner = Some(i);
-                                        break;
-                                    }
-                                }
-
-                                match owner {
-                                    Some(owner) => {
-                                        info!("Requested that {} takes a turn for {}", match_.participants[owner].address, match_.combat_state.parties[ready.party_index].members[ready.member_index].name);
-                                        match_.participants[owner].address.send_message(&sender, &TakeTurn { target: ready }).unwrap();
-                                    },
-                                    None => error!("Match participant has no owner but needs to take a turn"),
-                                }
-                            }
-
-                            matches_by_client.insert(addr1, match_.clone());
-                            matches_by_client.insert(addr2, match_);
-                        }
-                    },
+                    SocketEvent::Connect(address) => clients.push(address),
                     SocketEvent::Timeout(address) => info!("{} timed out", address),
                     SocketEvent::Disconnect(address) => info!("{} disconnected", address),
                 },
