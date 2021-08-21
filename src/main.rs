@@ -1,19 +1,11 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    convert::{TryFrom, TryInto},
-    env,
-    io::Write,
-    net::{SocketAddr, ToSocketAddrs},
-    rc::Rc,
-    sync::{Arc, atomic::{AtomicBool, Ordering}},
-    thread::{self, sleep},
-    time::{Duration, Instant}
-};
+mod config;
 
-use colosseum::{bodywear::BodywearIdentifier, combat_event::CombatEvent, combat_state::CombatState, combatant::Combatant, footwear::FootwearIdentifier, gender::Gender, handwear::HandwearIdentifier, legwear::LegwearIdentifier, message::{Message, MessageType, ProtocolVersion, TakeTurn}, party::Party, skill::SkillIdentifier, target::Target, weapon::WeaponIdentifier};
+use std::{cell::RefCell, collections::HashMap, convert::{TryFrom, TryInto}, fs, io::Write, net::SocketAddr, path::Path, rc::Rc, sync::{Arc, atomic::{AtomicBool, Ordering}}, thread::{self, sleep}, time::{Duration, Instant}};
+
+use colosseum::{combat_event::CombatEvent, combat_state::CombatState, message::{Message, MessageType, ProtocolVersion, TakeTurn}, party::Party, target::Target};
+use config::Config;
 use crossbeam::channel::{Sender, TryRecvError};
-use laminar::{Config, Packet, SocketEvent};
+use laminar::{Config as NetworkConfig, Packet, SocketEvent};
 use log::{error, info};
 
 pub trait Client {
@@ -49,13 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(None, log::LevelFilter::Info)
         .init();
 
-    let mut args = env::args();
-    let _app = args.next();
-    let addresses = args.next().unwrap();
-    let mut addresses = addresses.to_socket_addrs().unwrap();
-    let address = addresses.next().unwrap();
+    let config = load_config();
+    let address = config.address;
 
-    let mut socket = laminar::Socket::bind_with_config(address, Config {
+    let mut socket = laminar::Socket::bind_with_config(address, NetworkConfig {
         idle_connection_timeout: Duration::from_secs(120),
         heartbeat_interval: Some(Duration::from_secs(50)),
         ..Default::default()
@@ -215,4 +204,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     stop_signal.swap(true, Ordering::Relaxed);
 
     Ok(())
+}
+
+fn load_config() -> Config {
+    let path = Path::new("config.json");
+
+    match path.exists() {
+        true => {
+            let config = fs::read(path).unwrap();
+            serde_json::from_slice::<Config>(&config).unwrap()
+        },
+        false => {
+            let config = Config::default();
+            fs::write(path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+            config
+        },
+    }
 }
