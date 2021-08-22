@@ -1,4 +1,5 @@
-use std::{env, path::Path};
+use std::env;
+use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=\"config.json\"");
