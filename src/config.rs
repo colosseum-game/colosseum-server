@@ -1,3 +1,5 @@
+// Copyright 2021 Chay Nabors.
+
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;

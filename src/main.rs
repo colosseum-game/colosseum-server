@@ -1,3 +1,5 @@
+// Copyright 2021 Chay Nabors.
+
 mod config;
 
 use std::cell::RefCell;

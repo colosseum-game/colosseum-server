@@ -1,3 +1,5 @@
+// Copyright 2021 Chay Nabors.
+
 use std::env;
 use std::path::Path;
 
